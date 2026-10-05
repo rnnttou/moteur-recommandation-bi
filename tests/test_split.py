@@ -8,7 +8,7 @@ def test_temporal_split_is_chronological_and_disjoint():
     s = temporal_split(data.interactions)
     order = ["retriever", "ranker", "valid", "test"]
     for u in s.test["user"].unique():
-        spans = [getattr(s, name).query("user == @u")["timestamp"] for name in order]
+        spans = [getattr(s, name).loc[lambda d: d["user"] == u, "timestamp"] for name in order]
         assert all(len(x) > 0 for x in spans)
         for earlier, later in zip(spans, spans[1:]):
             assert earlier.max() <= later.min()

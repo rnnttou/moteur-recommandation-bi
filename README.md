@@ -2,7 +2,7 @@
 
 **Python · TensorFlow · FAISS** — génération de candidats par embeddings, puis modèle de classement, évalués avec **NDCG@k** et **recall@k**. Les résultats sont exportés en modèle en étoile pour **Power BI / Tableau**.
 
-> Statut : en cours. Le pipeline complet est écrit ; les résultats chiffrés sont à régénérer avec `python run_pipeline.py` (voir « Exécution »).
+> Statut : terminé. Pipeline complet, tests unitaires et résultats ci-dessous (voir « Résultats »).
 
 ---
 
@@ -62,6 +62,24 @@ Découpage **chronologique par utilisateur** (≥ 5 positifs) :
 - **hit-rate@k**, **couverture du catalogue**, **popularité moyenne** des recommandations (angle métier / diversité)
 
 Baselines comparées : **popularité**, **retrieval seul**, **pipeline complet (retrieval + ranking)**, plus le **plafond de candidats** (recall@100).
+
+## Résultats
+
+MovieLens 100K, jeu de **test** chronologique, index FAISS HNSW, items déjà vus exclus (`python run_pipeline.py --index hnsw`) :
+
+| Modèle | recall@10 | NDCG@10 | recall@20 | NDCG@20 | NDCG@50 |
+|---|---|---|---|---|---|
+| Popularité | 0,059 | 0,077 | 0,107 | 0,090 | 0,129 |
+| Retrieval seul (two-tower + FAISS) | 0,077 | 0,079 | 0,141 | 0,101 | 0,146 |
+| **Pipeline complet (retrieval + ranking)** | **0,094** | **0,109** | **0,168** | **0,129** | **0,173** |
+
+- Le classeur apporte **+38 % de NDCG@10** par rapport au retrieval seul (0,079 → 0,109) et **+42 %** par rapport à la popularité.
+- Plafond de l'étape 1 : **recall@100 = 0,42** (hit-rate@100 = 0,91), donc borne supérieure du recall du classeur.
+- Diversité (k = 10) : couverture du catalogue de 22 % pour le pipeline complet, contre 3 % pour la popularité (le retrieval seul atteint 40 %, au prix d'un meilleur classement perdu).
+
+![Métriques](docs/metrics.png)
+
+Résultats d'une exécution unique (une graine) sur un petit jeu : les écarts relatifs sont fiables, les valeurs absolues restent indicatives.
 
 ## 4. Détail des modèles
 
