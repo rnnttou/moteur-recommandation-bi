@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+data/
+outputs/
+*.keras
+*.h5
+*.faiss
+.ipynb_checkpoints/
