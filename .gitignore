@@ -8,3 +8,4 @@ outputs/
 *.h5
 *.faiss
 .ipynb_checkpoints/
+space_build/

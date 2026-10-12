@@ -1,0 +1,6 @@
+tensorflow>=2.16
+faiss-cpu>=1.8
+numpy>=1.26
+pandas>=2.1
+scipy>=1.11
+gradio>=4.44
