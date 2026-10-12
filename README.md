@@ -2,13 +2,17 @@
 
 **Python · TensorFlow · FAISS** — génération de candidats par embeddings, puis modèle de classement, évalués avec **NDCG@k** et **recall@k**. Les résultats sont exportés en modèle en étoile pour **Power BI / Tableau**.
 
+[![Ouvrir dans Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/rnnttou/moteur-recommandation-bi/blob/main/notebooks/demo_moteur.ipynb)
+
 > Statut : terminé. Pipeline complet, tests unitaires et résultats ci-dessous (voir « Résultats »).
 
 ---
 
 ## 1. Problème et approche
 
-Un catalogue de milliers (ou millions) d'items ne peut pas être scoré en entier par un modèle riche. Le standard industriel est donc une cascade :
+**Le besoin métier.** Une plateforme de streaming veut augmenter l'engagement : que chaque abonné trouve vite un film qu'il va réellement regarder. La solution de facilité est de recommander les films les plus populaires. Elle marche à peu près (recall@10 de 0,059 ici) mais elle sert tout le monde pareil, laisse 97 % du catalogue invisible (couverture de 3 %) et n'apprend rien du profil de chacun. L'objectif est donc de **personnaliser sans s'enfermer dans les blockbusters**, et de **mesurer** à qui le moteur profite et ce qu'il met en avant.
+
+**La contrainte technique.** Un catalogue de milliers (ou millions) d'items ne peut pas être scoré en entier par un modèle riche. Le standard industriel est une cascade : une étape rapide qui ne rate presque rien, puis une étape précise qui ordonne.
 
 ```
                  tout le catalogue (N items)
@@ -122,9 +126,77 @@ Perte : entropie croisée pondérée (positifs rares), early stopping sur l'AUC 
 | `fact_diversity.csv` | fait | couverture du catalogue, popularité moyenne |
 | `fact_genre_exposure.csv` | fait | part de chaque genre : catalogue vs. consommé vs. recommandé |
 
+### Traçabilité : du pipeline aux tables BI
+
+| Table | Produite à partir de (code) | Grain (1 ligne = …) | Question métier |
+|---|---|---|---|
+| `dim_user` | `data.users` ([data.py](recsys/data.py)) | un utilisateur | segmenter par âge / profession / sexe |
+| `dim_item` | `data.items` + popularité de l'historique avant test | un film | titre, genre principal, popularité |
+| `fact_interactions` | `splits` ([data.py](recsys/data.py)), positifs uniquement (note ≥ 4) | une interaction positive, étiquetée `retriever` / `ranker` / `valid` / `test` | vérifier le découpage chronologique |
+| `fact_recommendations` | sortie du classeur (`output["ranked"]`), pipeline complet seulement | un (utilisateur, rang), top-20 ; `is_hit` = item présent dans le test | explorer les recommandations et leurs scores |
+| `fact_metrics` | `summarize(...)` ([metrics.py](recsys/metrics.py)) | un (modèle, métrique, k), moyenne sur les utilisateurs de test | comparer popularité / retrieval / pipeline complet |
+| `fact_user_metrics` | `evaluate_ranking(...)` joint à `dim_user` | un (utilisateur, modèle), les 3 modèles | où le moteur est-il moins performant ? |
+| `fact_diversity` | `catalog_coverage`, `mean_log_popularity` (k = 10) | un modèle | biais de popularité, couverture |
+| `fact_genre_exposure` | genres des items : catalogue, test, top-10 du pipeline complet | un genre | sur-exposition de certains genres |
+
+Notes de lecture :
+- Les grains diffèrent : `fact_recommendations` ne contient que le pipeline complet, alors que `fact_user_metrics` contient les trois modèles. Filtrer sur `model` pour comparer.
+- `fact_user_metrics` reprend les attributs de `dim_user` (dénormalisation volontaire, pour filtrer sans relation supplémentaire).
+- Les chiffres de la section « Résultats » proviennent de `fact_metrics.csv` / `outputs/metrics.json` : ce sont les mêmes valeurs que celles affichées dans le dashboard.
+- **Le fichier `.pbix` n'est pas dans le repo** : il doit être construit dans Power BI Desktop (pas disponible dans l'environnement où ce dépôt a été préparé). [docs/POWERBI.md](docs/POWERBI.md) donne le modèle, les mesures DAX et le pas-à-pas des 3 pages. Les images `docs/dashboard_page*.png` sont des **aperçus matplotlib** des mêmes calculs (`scripts/build_dashboard_preview.py`), pas des captures Power BI.
+
 Pages de dashboard et mesures DAX : voir [docs/POWERBI.md](docs/POWERBI.md).
 
-Questions métier auxquelles le dashboard répond : le moteur sert-il mieux certains segments (âge, profession) ? Sur-expose-t-il les genres populaires ? Quel est le gain réel du classeur sur le retrieval seul ?
+Questions métier auxquelles le dashboard répond : le moteur sert-il mieux certains segments (âge, profession) ? Sur-expose-t-il certains genres ? Quel est le gain réel du classeur sur le retrieval seul ? Réponses ci-dessous.
+
+## Conclusions métier
+
+Tirées des tables `outputs/bi/` (pipeline complet, jeu de test, 938 utilisateurs), pages Segments et Contenu du dashboard.
+
+![Vue d'ensemble](docs/dashboard_page1.png)
+![Segments](docs/dashboard_page2.png)
+![Contenu et diversité](docs/dashboard_page3.png)
+
+*Aperçus matplotlib des mesures du dashboard, pas des captures Power BI.*
+
+### Quels segments sont mal servis ?
+
+Moyenne globale : NDCG@10 = 0,109, hit@10 = 0,50.
+
+| Segment | n | NDCG@10 | Lecture |
+|---|---|---|---|
+| Profession *writer* | 45 | **0,060** | Le plus faible, 45 % sous la moyenne ; seul écart net sur un effectif correct |
+| Moins de 18 ans | 36 | 0,089 | NDCG bas et hit@10 de 0,39 ; en revanche **x3,5 mieux que la popularité** (0,025), donc la personnalisation aide beaucoup |
+| 18-24 ans | 198 | 0,104 | **Quasi pas de gain face à la popularité** (0,100) et hit@10 de 0,44 : le plus gros segment est celui où le moteur apporte le moins |
+| 45-49 ans | 79 | 0,097 | Sous la moyenne, hit@10 de 0,43 |
+| Femmes | 271 | 0,103 | Léger écart vs hommes (0,112), à surveiller, pas alarmant |
+
+Les mieux servis : *executive* (0,168), *engineer* (0,147), 25-34 ans (0,119).
+
+Précautions : les écarts par âge et par sexe sont **modestes** (quelques millièmes de NDCG), sans intervalle de confiance, sur une seule graine. Les professions à faible effectif (*doctor* n=7, *homemaker* n=7, *salesman* n=12) ne sont pas interprétables. Le NDCG croît aussi mécaniquement avec le nombre d'items de test d'un utilisateur (0,08 pour moins de 5 items, 0,17 pour 20-50), donc une partie de l'écart entre segments reflète la taille de leur historique de test plutôt qu'une vraie faiblesse du modèle. Ce n'est pas une démonstration de cold-start : le jeu ne contient que des utilisateurs avec au moins 5 positifs.
+
+### Le moteur sur-expose-t-il certains genres ?
+
+Oui, mais **ce n'est pas un biais de popularité pur** : la popularité moyenne des recommandations est plus basse que celle de la baseline (log-popularité 4,98 contre 5,66) et la couverture est 7 fois meilleure (22 % contre 3 %). Le biais est un biais **de genre** : le moteur déplace l'exposition des genres « de masse » vers l'action.
+
+| | Genre | Part consommée (test) | Part recommandée | Ratio |
+|---|---|---|---|---|
+| Sur-exposés | War | 3,7 % | 5,7 % | x1,55 |
+| | Sci-Fi | 5,8 % | 8,6 % | x1,50 |
+| | Adventure | 6,4 % | 8,8 % | x1,37 |
+| | Action | 11,5 % | 14,9 % | x1,30 |
+| Sous-exposés | Drama | 19,7 % | 12,5 % | x0,63 |
+| | Comedy | 14,5 % | 9,3 % | x0,64 |
+| | Documentary, Film-Noir | 0,4 % / 0,9 % | 0,1 % / 0,4 % | x0,39 / x0,41 |
+
+Drama et Comedy sont les deux premiers genres du catalogue et de la consommation, mais perdent un tiers de leur place dans le top-10. Cause plausible, non testée : ces genres sont très hétérogènes, donc moins bien capturés par les embeddings que l'action.
+
+### Ce que je recommanderais
+
+1. **Corriger l'exposition par genre** : ajouter une étape de reclassement diversifiant (MMR ou quotas de genre autour de la part consommée), puis vérifier dans la page Contenu que l'écart recommandé - consommé passe sous ±2 points. Le coût attendu en NDCG est à mesurer, la couverture de 22 % laisse de la marge.
+2. **Traiter les 18-24 ans en priorité** : segment le plus nombreux (21 % des utilisateurs) où le classeur n'ajoute presque rien à la popularité. Pistes : features de session récente (cf. section 8), négatifs difficiles.
+3. **Ne pas sur-réagir aux petits segments** (*writer* mis à part, qui mérite une analyse des genres consommés) : collecter plus de données avant d'agir.
+4. **Valider par A/B test** avant tout déploiement : tout ce qui précède est hors-ligne, sur MovieLens 100K, avec une seule graine.
 
 ## 6. Exécution
 
@@ -157,6 +229,7 @@ recsys/
   bi_export.py   export en étoile pour Power BI + graphique
 run_pipeline.py  point d'entrée CLI
 scripts/benchmark_faiss.py
+scripts/build_dashboard_preview.py   aperçus PNG du dashboard
 tests/
 docs/POWERBI.md
 ```
